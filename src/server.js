@@ -3,7 +3,14 @@ const grpc = require('@grpc/grpc-js');
 const protoLoader = require('@grpc/proto-loader');
 const path = require('path');
 
-// Load the protobuf
+// --- Configuration ---
+// Get the CartService address from environment variables, with a default for local testing
+const CART_SERVICE_ADDR = process.env.CART_SERVICE_ADDR || 'localhost:7070';
+const POLLING_INTERVAL_MS = 30000; // Check for carts every 30 seconds
+
+// --- gRPC Client Setup ---
+// Load the protobuf. Assuming it's the hipstershop demo proto.
+// Make sure the path to your .proto file is correct.
 const PROTO_PATH = path.join(__dirname, '../protos/demo.proto');
 const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
     keepCase: true,
@@ -20,16 +27,35 @@ class AIDiscountService {
     constructor() {
         console.log('🚀 AI Discount Service Starting...');
         this.userSessions = new Map(); // Store user behavior data
+
+        // Create the gRPC client to talk to the CartService
+        this.cartClient = new hipstershop.CartService(
+            CART_SERVICE_ADDR,
+            grpc.credentials.createInsecure() // Use insecure credentials for this example
+        );
     }
 
-    // Listen to cart events (your main data source)
+    // Helper function to wrap the gRPC callback in a Promise for async/await
+    getCartForUser(userId) {
+        return new Promise((resolve, reject) => {
+            this.cartClient.getCart({ user_id: userId }, (err, cart) => {
+                if (err) {
+                    // If the cart is not found, gRPC returns an error. We treat this as an empty cart.
+                    if (err.code === grpc.status.NOT_FOUND) {
+                        return resolve({ user_id: userId, items: [] });
+                    }
+                    return reject(err);
+                }
+                resolve(cart);
+            });
+        });
+    }
+
+    // This function now just confirms the client is ready
     async listenToCartEvents() {
-        console.log('📊 Starting to listen for cart events...');
-        
-        // TODO: Implement gRPC client to listen to CartService calls
-        // This is where you'll intercept AddItem and GetCart calls
-        
-        console.log('✅ Cart listener active');
+        console.log(`📡 Cart Service client configured to connect to ${CART_SERVICE_ADDR}`);
+        // In a real application, you might add a gRPC health check here
+        console.log('✅ Cart listener ready.');
     }
 
     // Analyze user behavior with AI
@@ -59,10 +85,34 @@ class AIDiscountService {
         await this.listenToCartEvents();
         console.log('🎯 AI Discount Service is running!');
         
-        // Keep the service alive
-        setInterval(() => {
-            console.log('💗 Service heartbeat - monitoring for cart abandonments...');
-        }, 30000); // Every 30 seconds
+        // Keep the service alive by polling for abandoned carts
+        setInterval(async () => {
+            console.log('💗 Service heartbeat - polling for cart abandonments...');
+            
+            // In a real app, you would get this list from a session service or database
+            const activeUserIds = ['1', '2', '3']; // Dummy users to check
+
+            for (const userId of activeUserIds) {
+                try {
+                    const cart = await this.getCartForUser(userId);
+
+                    // Simple abandonment logic: if the cart has items, analyze it.
+                    // A real app would also check the cart's last_updated timestamp.
+                    if (cart.items && cart.items.length > 0) {
+                        console.log(`🛒 Found cart with ${cart.items.length} item(s) for user ${userId}. Analyzing...`);
+
+                        const analysis = await this.analyzeUserBehavior({ userId, cart });
+
+                        if (analysis.shouldSendDiscount) {
+                            const userEmail = `${userId}@example.com`; // Dummy email for example
+                            await this.sendDiscountEmail(userEmail, analysis);
+                        }
+                    }
+                } catch (error) {
+                    console.error(`❌ Error checking cart for user ${userId}:`, error.message);
+                }
+            }
+        }, POLLING_INTERVAL_MS);
     }
 }
 
